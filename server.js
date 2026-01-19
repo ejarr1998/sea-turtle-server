@@ -7,19 +7,10 @@ const io = require('socket.io')(http, {
     methods: ["GET", "POST"]
   }
 });
+const path = require('path');
 
-// Health check endpoint for Railway
-app.get('/', (req, res) => {
-  res.send('Sea Turtle Multiplayer Server is running! 🐢');
-});
-
-app.get('/health', (req, res) => {
-  res.json({ 
-    status: 'ok', 
-    rooms: gameRooms.size,
-    queueSize: matchmakingQueue.length
-  });
-});
+// Serve static files from the public directory
+app.use(express.static(path.join(__dirname, 'public')));
 
 // Game constants - matching client
 const GAME_WIDTH = 1000;
@@ -518,7 +509,10 @@ class GameRoom {
         continue;
       }
 
-      // Check collision with players
+      // Check collision with players (only if jellyfish is on screen)
+      const jellyOnScreen = jelly.x > 0 && jelly.x < GAME_WIDTH && jelly.y > 0 && jelly.y < GAME_HEIGHT;
+      if (!jellyOnScreen) continue;
+      
       for (const player of this.players.values()) {
         if (!player.alive || player.spawnProtection) continue;
         const dx = player.x - jelly.x;
@@ -692,11 +686,11 @@ class GameRoom {
         return;
       }
       
-      // If mega shark is active, increase its speed bonus
+      // If mega shark is active, increase its speed bonus but ALSO spawn more sharks
       if (this.megaSharkActive) {
         this.megaSharkSpeedBonus += 0.5;
         console.log(`🦈 Mega shark getting faster! Speed bonus: ${this.megaSharkSpeedBonus}`);
-        return;
+        // Don't return - continue to spawn additional sharks!
       }
       
       this.sharks.push({
