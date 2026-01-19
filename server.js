@@ -16,7 +16,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 const GAME_WIDTH = 1000;
 const GAME_HEIGHT = 1000;
 const TICK_RATE = 60;        // Physics updates per second (internal)
-const BROADCAST_RATE = 30;   // Network updates per second (sent to clients)
+const BROADCAST_RATE = 60;   // Network updates per second (sent to clients)
 
 // Active game rooms
 const gameRooms = new Map();
