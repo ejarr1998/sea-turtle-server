@@ -3,11 +3,40 @@ const app = express();
 const http = require('http').createServer(app);
 const io = require('socket.io')(http, {
   cors: {
-    origin: "*",
-    methods: ["GET", "POST"]
+    origin: [
+      "https://www.seaturtlegame.com",
+      "https://seaturtlegame.com",
+      "http://localhost:3000",
+      "http://localhost:8080",
+      "http://127.0.0.1:3000",
+      "http://127.0.0.1:8080"
+    ],
+    methods: ["GET", "POST"],
+    credentials: true
   }
 });
 const path = require('path');
+
+// Enable CORS for express routes too
+app.use((req, res, next) => {
+  const allowedOrigins = [
+    "https://www.seaturtlegame.com",
+    "https://seaturtlegame.com",
+    "http://localhost:3000",
+    "http://localhost:8080"
+  ];
+  const origin = req.headers.origin;
+  if (allowedOrigins.includes(origin)) {
+    res.header('Access-Control-Allow-Origin', origin);
+  }
+  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  next();
+});
 
 // Serve static files from the public directory
 app.use(express.static(path.join(__dirname, 'public')));
@@ -40,7 +69,7 @@ const BASE_SPEEDS = {
   sailfish: 7,
   seadragon: 6,
   stingray: 5,
-  pufferfish: 3,
+  pufferfish: 4,
   turtle: 4,
   seal: 4,
   penguin: 5,
@@ -808,11 +837,21 @@ class GameRoom {
       player.vy += input.joystick.y * currentSpeed * 0.15;
     }
 
-    // Cap speed
+    // Pufferfish gets vertical speed boost (2x up, 1.25x down)
+    if (player.character === 'pufferfish') {
+      if (player.vy < 0) {
+        player.vy *= 2; // Double speed going up
+      } else if (player.vy > 0) {
+        player.vy *= 1.25; // 1.25x speed going down
+      }
+    }
+
+    // Cap speed (but allow pufferfish higher vertical cap)
     const currentVelocity = Math.sqrt(player.vx * player.vx + player.vy * player.vy);
-    if (currentVelocity > currentSpeed) {
-      player.vx = (player.vx / currentVelocity) * currentSpeed;
-      player.vy = (player.vy / currentVelocity) * currentSpeed;
+    const maxSpeed = player.character === 'pufferfish' ? currentSpeed * 2 : currentSpeed;
+    if (currentVelocity > maxSpeed) {
+      player.vx = (player.vx / currentVelocity) * maxSpeed;
+      player.vy = (player.vy / currentVelocity) * maxSpeed;
     }
   }
 
