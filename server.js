@@ -30,7 +30,9 @@ const COLLISION_RADII = {
   pufferfish: 0.8,
   seal: 0.65,
   sailfish: 0.55,
-  seadragon: 0.60
+  seadragon: 0.60,
+  penguin: 0.55,
+  dolphin: 0.55
 };
 
 // Base speeds by character
@@ -40,7 +42,9 @@ const BASE_SPEEDS = {
   stingray: 5,
   pufferfish: 3,
   turtle: 4,
-  seal: 4
+  seal: 4,
+  penguin: 5,
+  dolphin: 6
 };
 
 // Fish colors
@@ -472,9 +476,23 @@ class GameRoom {
         const newDy = nearestPlayer.y - shark.y;
         const newDist = Math.sqrt(newDx * newDx + newDy * newDy);
         
-        // Use smaller hitbox multiplier for fairer collisions
-        // Mega shark gets extra reduction since it's visually tall but collision is circular
-        const hitboxMultiplier = shark.isMegaShark ? 0.5 : 0.7;
+        // Match single player hitbox logic:
+        // Calculate angle from shark to player
+        const angleToPlayer = Math.atan2(newDy, newDx);
+        // Normalize angle difference to -PI to PI
+        let angleDiff = angleToPlayer - shark.rotation;
+        while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
+        while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
+        
+        // Adjust hitbox based on direction (same as single player)
+        // Front (head): Smaller hitbox (40% instead of 60%)
+        // Sides/Back: Normal hitbox (60%)
+        let hitboxMultiplier = 0.6; // Default (sides/back)
+        if (Math.abs(angleDiff) < Math.PI / 3) {
+          // Player is in front of shark (within 60 degrees) - smaller hitbox
+          hitboxMultiplier = 0.4;
+        }
+        
         const sharkHitboxRadius = shark.size * hitboxMultiplier;
         
         if (newDist < sharkHitboxRadius + nearestPlayer.collisionRadius && !nearestPlayer.spawnProtection) {
@@ -517,9 +535,27 @@ class GameRoom {
         if (!player.alive || player.spawnProtection) continue;
         const dx = player.x - jelly.x;
         const dy = player.y - jelly.y;
-        const dist = Math.sqrt(dx * dx + dy * dy);
         
-        if (dist < jelly.size + player.collisionRadius) {
+        // Match single player: Use elliptical hitbox - jellyfish is taller than wide
+        // Horizontal (x): Normal hitbox (30%)
+        // Vertical (y): Much smaller, especially from top (20%)
+        const hitboxX = jelly.size * 0.3;  // Horizontal radius
+        const hitboxY = jelly.size * 0.2;  // Vertical radius (smaller!)
+        
+        // Ellipse collision detection (same as single player)
+        const normalizedX = dx / (player.collisionRadius + hitboxX);
+        const normalizedY = dy / (player.collisionRadius + hitboxY);
+        const ellipseDistance = Math.sqrt(normalizedX * normalizedX + normalizedY * normalizedY);
+        
+        // If player is above jellyfish, make hitbox even smaller (same as single player)
+        let threshold = 1.0;
+        if (dy < 0) {
+          // Player is above jellyfish (approaching from top)
+          // Make it even more forgiving - only the very center of the bell
+          threshold = 0.7; // 30% more forgiving from top
+        }
+        
+        if (ellipseDistance < threshold) {
           console.log(`🎐 JELLYFISH KILLED ${player.name}`);
           player.alive = false;
         }
