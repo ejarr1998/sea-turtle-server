@@ -1114,7 +1114,7 @@ const FISHTANK_CONFIG = {
 };
 
 const ZONES = ['top-left', 'top-right', 'bottom-left', 'bottom-right'];
-const FISH_COLORS = ['#ff6b6b', '#ffd93d', '#6bcf7f', '#4ecdc4', '#95e1d3', '#ff8c42', '#a29bfe', '#fd79a8'];
+const FT_FISH_COLORS = ['#ff6b6b', '#ffd93d', '#6bcf7f', '#4ecdc4', '#95e1d3', '#ff8c42', '#a29bfe', '#fd79a8'];
 
 // Fish Tank storage
 const fishTanks = new Map(); // tankId -> FishTank instance
@@ -1152,7 +1152,7 @@ class FishTank {
       x: 100 + Math.random() * (FISHTANK_CONFIG.ZONE_WIDTH - 200),
       y: 100 + Math.random() * (FISHTANK_CONFIG.ZONE_HEIGHT - 200),
       size: 12 + Math.random() * 10,
-      color: FISH_COLORS[Math.floor(Math.random() * FISH_COLORS.length)],
+      color: FT_FISH_COLORS[Math.floor(Math.random() * FT_FISH_COLORS.length)],
       direction: Math.random() * Math.PI * 2,
       speed: 0.5 + Math.random() * 1,
       turnTimer: 0
