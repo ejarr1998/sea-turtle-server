@@ -1434,17 +1434,21 @@ class FishTank {
     const zone = this.zones[zoneName];
     const players = [];
     
-    zone.players.forEach(playerId => {
-      const player = this.players.get(playerId);
-      if (player) {
-        players.push(this.getPlayerData(player));
-      }
+    // Send ALL players in the tank (not just this zone) so clients can follow across zones
+    this.players.forEach(player => {
+      players.push(this.getPlayerData(player));
+    });
+    
+    // Count visible (non-hidden) players for the player count display
+    let visiblePlayers = 0;
+    this.players.forEach(player => {
+      if (!player.hidden) visiblePlayers++;
     });
     
     return {
       zone: zoneName,
       players: players,
-      totalPlayers: this.players.size, // Total players in entire tank
+      totalPlayers: visiblePlayers, // Only count visible players
       fish: zone.fish.map(f => ({
         id: f.id,
         x: Math.round(f.x),
