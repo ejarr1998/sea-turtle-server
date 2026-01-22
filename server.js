@@ -13,7 +13,10 @@ const io = require('socket.io')(http, {
     ],
     methods: ["GET", "POST"],
     credentials: true
-  }
+  },
+  pingTimeout: 60000,      // 60 seconds before considering connection dead
+  pingInterval: 25000,     // Send ping every 25 seconds
+  transports: ['websocket', 'polling']
 });
 const path = require('path');
 
@@ -42,6 +45,45 @@ app.use((req, res, next) => {
 app.get('/health', (req, res) => {
   res.status(200).send('OK - Sea Turtle Multiplayer Server alive');
 });
+
+// Player count endpoint
+app.get('/player-count', (req, res) => {
+  const counts = getPlayerCounts();
+  res.json(counts);
+});
+
+// Get current player counts across all modes
+function getPlayerCounts() {
+  let pvpPlayers = 0;
+  let fishTankPlayers = 0;
+  let queuePlayers = matchmakingQueue.length;
+  
+  // Count PvP players in active games
+  for (const room of gameRooms.values()) {
+    pvpPlayers += room.players.size;
+  }
+  
+  // Count Fish Tank players (fishTanks is defined later, so we check if it exists)
+  if (typeof fishTanks !== 'undefined') {
+    for (const tank of fishTanks.values()) {
+      fishTankPlayers += tank.players.size;
+    }
+  }
+  
+  return {
+    total: pvpPlayers + fishTankPlayers + queuePlayers,
+    pvp: pvpPlayers,
+    fishTank: fishTankPlayers,
+    queue: queuePlayers,
+    connections: io.engine.clientsCount || 0
+  };
+}
+
+// Broadcast player count to all connected clients
+function broadcastPlayerCount() {
+  const counts = getPlayerCounts();
+  io.emit('playerCount', counts);
+}
 
 // Serve static files from the public directory
 app.use(express.static(path.join(__dirname, 'public')));
@@ -977,6 +1019,9 @@ function generateRoomCode() {
 // Socket.IO connection handling
 io.on('connection', (socket) => {
   console.log(`Player connected: ${socket.id}`);
+  
+  // Send current player count to newly connected client
+  setTimeout(() => broadcastPlayerCount(), 100);
 
   // Auto-matchmaking system
   socket.on('findMatch', (data) => {
@@ -994,6 +1039,7 @@ io.on('connection', (socket) => {
     });
     
     console.log(`📊 Queue size: ${matchmakingQueue.length}`);
+    broadcastPlayerCount(); // Update count when someone joins queue
     
     if (matchmakingQueue.length >= 2) {
       console.log('✅ 2 players in queue! Creating match...');
@@ -1097,6 +1143,9 @@ io.on('connection', (socket) => {
         }
       }
     }
+    
+    // Broadcast updated player count
+    broadcastPlayerCount();
   });
 });
 
@@ -1432,6 +1481,9 @@ io.on('connection', (socket) => {
     tank.broadcastToZone(player.zone, 'playerJoined', {
       player: tank.getPlayerData(player)
     });
+    
+    // Broadcast updated player count
+    broadcastPlayerCount();
   });
   
   // Fish Tank input
@@ -1513,6 +1565,9 @@ io.on('connection', (socket) => {
       tank.removePlayer(socket.id);
     }
     playerTanks.delete(socket.id);
+    
+    // Broadcast updated player count
+    broadcastPlayerCount();
   });
   
   // Handle disconnect for Fish Tank
@@ -1528,6 +1583,9 @@ io.on('connection', (socket) => {
         tank.removePlayer(socket.id);
       }
       playerTanks.delete(socket.id);
+      
+      // Broadcast updated player count
+      broadcastPlayerCount();
     }
   });
 });
