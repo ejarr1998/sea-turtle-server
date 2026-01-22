@@ -1100,6 +1100,438 @@ io.on('connection', (socket) => {
   });
 });
 
+// ============================================
+// FISH TANK - Social Multiplayer Mode
+// ============================================
+
+const FISHTANK_CONFIG = {
+  MAX_PLAYERS_PER_TANK: 10,
+  ZONE_WIDTH: 1200,
+  ZONE_HEIGHT: 800,
+  FISH_PER_ZONE: 20,
+  FISH_RESPAWN_TIME: 5000, // 5 seconds
+  TICK_RATE: 20 // Updates per second
+};
+
+const ZONES = ['top-left', 'top-right', 'bottom-left', 'bottom-right'];
+const FISH_COLORS = ['#ff6b6b', '#ffd93d', '#6bcf7f', '#4ecdc4', '#95e1d3', '#ff8c42', '#a29bfe', '#fd79a8'];
+
+// Fish Tank storage
+const fishTanks = new Map(); // tankId -> FishTank instance
+let nextTankId = 1;
+
+class FishTank {
+  constructor(id) {
+    this.id = id;
+    this.players = new Map(); // odId -> player data
+    this.zones = {
+      'top-left': { fish: [], players: new Set() },
+      'top-right': { fish: [], players: new Set() },
+      'bottom-left': { fish: [], players: new Set() },
+      'bottom-right': { fish: [], players: new Set() }
+    };
+    this.updateInterval = null;
+    
+    // Initialize fish for each zone
+    ZONES.forEach(zone => {
+      this.spawnInitialFish(zone);
+    });
+    
+    console.log(`🐠 Fish Tank ${id} created`);
+  }
+  
+  spawnInitialFish(zone) {
+    for (let i = 0; i < FISHTANK_CONFIG.FISH_PER_ZONE; i++) {
+      this.spawnFish(zone);
+    }
+  }
+  
+  spawnFish(zone) {
+    const fish = {
+      id: `fish-${zone}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      x: 100 + Math.random() * (FISHTANK_CONFIG.ZONE_WIDTH - 200),
+      y: 100 + Math.random() * (FISHTANK_CONFIG.ZONE_HEIGHT - 200),
+      size: 12 + Math.random() * 10,
+      color: FISH_COLORS[Math.floor(Math.random() * FISH_COLORS.length)],
+      direction: Math.random() * Math.PI * 2,
+      speed: 0.5 + Math.random() * 1,
+      turnTimer: 0
+    };
+    this.zones[zone].fish.push(fish);
+    return fish;
+  }
+  
+  addPlayer(socketId, playerData) {
+    const startZone = 'top-left'; // Everyone starts in Coral Garden
+    const player = {
+      id: socketId,
+      name: playerData.playerName || 'Player',
+      character: playerData.character || 'turtle',
+      zone: startZone,
+      x: FISHTANK_CONFIG.ZONE_WIDTH / 2,
+      y: FISHTANK_CONFIG.ZONE_HEIGHT / 2,
+      vx: 0,
+      vy: 0,
+      rotation: 0
+    };
+    
+    this.players.set(socketId, player);
+    this.zones[startZone].players.add(socketId);
+    
+    console.log(`🐠 Player ${player.name} joined Tank ${this.id} (${this.players.size} players)`);
+    
+    // Start update loop if this is the first player
+    if (this.players.size === 1) {
+      this.startUpdateLoop();
+    }
+    
+    return player;
+  }
+  
+  removePlayer(socketId) {
+    const player = this.players.get(socketId);
+    if (player) {
+      this.zones[player.zone].players.delete(socketId);
+      this.players.delete(socketId);
+      console.log(`🐠 Player left Tank ${this.id} (${this.players.size} players remaining)`);
+      
+      // Stop update loop if empty
+      if (this.players.size === 0) {
+        this.stopUpdateLoop();
+      }
+    }
+    return this.players.size;
+  }
+  
+  updatePlayerInput(socketId, input) {
+    const player = this.players.get(socketId);
+    if (!player) return;
+    
+    // Update position from client (client-authoritative for smooth movement)
+    player.x = input.x;
+    player.y = input.y;
+    player.vx = input.vx;
+    player.vy = input.vy;
+    player.rotation = input.rotation;
+    
+    // Handle zone change
+    if (input.zone && input.zone !== player.zone && ZONES.includes(input.zone)) {
+      this.zones[player.zone].players.delete(socketId);
+      player.zone = input.zone;
+      this.zones[input.zone].players.add(socketId);
+      
+      // Notify others in both zones
+      this.broadcastToZone(player.zone, 'playerEnteredZone', {
+        playerId: socketId,
+        player: this.getPlayerData(player)
+      });
+    }
+  }
+  
+  handleFishEaten(socketId, fishId) {
+    const player = this.players.get(socketId);
+    if (!player) return false;
+    
+    const zone = this.zones[player.zone];
+    const fishIndex = zone.fish.findIndex(f => f.id === fishId);
+    
+    if (fishIndex !== -1) {
+      zone.fish.splice(fishIndex, 1);
+      
+      // Respawn fish after delay
+      setTimeout(() => {
+        if (this.zones[player.zone]) {
+          this.spawnFish(player.zone);
+        }
+      }, FISHTANK_CONFIG.FISH_RESPAWN_TIME);
+      
+      return true;
+    }
+    return false;
+  }
+  
+  handleEmote(socketId, emoteData) {
+    const player = this.players.get(socketId);
+    if (!player) return;
+    
+    // Broadcast emote to all players in the same zone
+    this.broadcastToZone(player.zone, 'emote', {
+      playerId: socketId,
+      emote: emoteData.emote,
+      x: player.x,
+      y: player.y
+    });
+  }
+  
+  startUpdateLoop() {
+    if (this.updateInterval) return;
+    
+    this.updateInterval = setInterval(() => {
+      this.update();
+    }, 1000 / FISHTANK_CONFIG.TICK_RATE);
+    
+    console.log(`🐠 Tank ${this.id} update loop started`);
+  }
+  
+  stopUpdateLoop() {
+    if (this.updateInterval) {
+      clearInterval(this.updateInterval);
+      this.updateInterval = null;
+      console.log(`🐠 Tank ${this.id} update loop stopped`);
+    }
+  }
+  
+  update() {
+    // Update fish in each zone
+    ZONES.forEach(zoneName => {
+      const zone = this.zones[zoneName];
+      
+      zone.fish.forEach(fish => {
+        // Move fish
+        fish.x += Math.cos(fish.direction) * fish.speed;
+        fish.y += Math.sin(fish.direction) * fish.speed;
+        
+        // Random turning
+        fish.turnTimer--;
+        if (fish.turnTimer <= 0) {
+          fish.direction += (Math.random() - 0.5) * 1;
+          fish.turnTimer = 30 + Math.random() * 60;
+        }
+        
+        // Bounce off walls (stay in zone)
+        const margin = 50;
+        if (fish.x < margin || fish.x > FISHTANK_CONFIG.ZONE_WIDTH - margin) {
+          fish.direction = Math.PI - fish.direction;
+          fish.x = Math.max(margin, Math.min(FISHTANK_CONFIG.ZONE_WIDTH - margin, fish.x));
+        }
+        if (fish.y < margin || fish.y > FISHTANK_CONFIG.ZONE_HEIGHT - margin) {
+          fish.direction = -fish.direction;
+          fish.y = Math.max(margin, Math.min(FISHTANK_CONFIG.ZONE_HEIGHT - margin, fish.y));
+        }
+      });
+      
+      // Broadcast state to players in this zone
+      if (zone.players.size > 0) {
+        const state = this.getZoneState(zoneName);
+        zone.players.forEach(playerId => {
+          const socket = io.sockets.sockets.get(playerId);
+          if (socket) {
+            socket.emit('tankState', state);
+          }
+        });
+      }
+    });
+  }
+  
+  getZoneState(zoneName) {
+    const zone = this.zones[zoneName];
+    const players = [];
+    
+    zone.players.forEach(playerId => {
+      const player = this.players.get(playerId);
+      if (player) {
+        players.push(this.getPlayerData(player));
+      }
+    });
+    
+    return {
+      zone: zoneName,
+      players: players,
+      fish: zone.fish.map(f => ({
+        id: f.id,
+        x: Math.round(f.x),
+        y: Math.round(f.y),
+        size: f.size,
+        color: f.color,
+        direction: f.direction
+      }))
+    };
+  }
+  
+  getPlayerData(player) {
+    return {
+      id: player.id,
+      name: player.name,
+      character: player.character,
+      x: Math.round(player.x),
+      y: Math.round(player.y),
+      rotation: player.rotation,
+      zone: player.zone
+    };
+  }
+  
+  broadcastToZone(zoneName, event, data) {
+    const zone = this.zones[zoneName];
+    zone.players.forEach(playerId => {
+      const socket = io.sockets.sockets.get(playerId);
+      if (socket) {
+        socket.emit(event, data);
+      }
+    });
+  }
+  
+  isFull() {
+    return this.players.size >= FISHTANK_CONFIG.MAX_PLAYERS_PER_TANK;
+  }
+}
+
+// Find or create a tank for a new player
+function findAvailableTank() {
+  // Look for a tank with space
+  for (const [tankId, tank] of fishTanks) {
+    if (!tank.isFull()) {
+      return tank;
+    }
+  }
+  
+  // Create a new tank
+  const newTank = new FishTank(`tank-${nextTankId++}`);
+  fishTanks.set(newTank.id, newTank);
+  return newTank;
+}
+
+// Clean up empty tanks periodically
+setInterval(() => {
+  for (const [tankId, tank] of fishTanks) {
+    if (tank.players.size === 0) {
+      tank.stopUpdateLoop();
+      fishTanks.delete(tankId);
+      console.log(`🐠 Empty Tank ${tankId} removed`);
+    }
+  }
+}, 60000); // Check every minute
+
+// Fish Tank socket handlers (add to existing io.on('connection'))
+// We need to add these handlers in the existing connection handler
+
+// Store player's current tank
+const playerTanks = new Map(); // socketId -> tankId
+
+// Add Fish Tank handlers to the main socket connection
+io.on('connection', (socket) => {
+  // Join Fish Tank
+  socket.on('joinFishTank', (data) => {
+    console.log(`🐠 Player wants to join Fish Tank:`, data);
+    
+    // Find or create a tank
+    const tank = findAvailableTank();
+    const player = tank.addPlayer(socket.id, data);
+    
+    // Store reference
+    playerTanks.set(socket.id, tank.id);
+    
+    // Send confirmation
+    socket.emit('tankJoined', {
+      tankId: tank.id,
+      zone: player.zone,
+      player: tank.getPlayerData(player),
+      playerCount: tank.players.size
+    });
+    
+    // Notify others in the zone
+    tank.broadcastToZone(player.zone, 'playerJoined', {
+      player: tank.getPlayerData(player)
+    });
+  });
+  
+  // Fish Tank input
+  socket.on('fishTankInput', (input) => {
+    const tankId = playerTanks.get(socket.id);
+    if (!tankId) return;
+    
+    const tank = fishTanks.get(tankId);
+    if (tank) {
+      tank.updatePlayerInput(socket.id, input);
+    }
+  });
+  
+  // Zone change
+  socket.on('changeZone', (data) => {
+    const tankId = playerTanks.get(socket.id);
+    if (!tankId) return;
+    
+    const tank = fishTanks.get(tankId);
+    if (tank) {
+      const player = tank.players.get(socket.id);
+      if (player) {
+        // Notify old zone
+        tank.broadcastToZone(player.zone, 'playerLeft', socket.id);
+        
+        // Update zone
+        tank.zones[player.zone].players.delete(socket.id);
+        player.zone = data.zone;
+        tank.zones[data.zone].players.add(socket.id);
+        
+        // Notify player of zone change
+        socket.emit('zoneChanged', { playerId: socket.id, zone: data.zone });
+        
+        // Notify new zone
+        tank.broadcastToZone(data.zone, 'playerJoined', {
+          player: tank.getPlayerData(player)
+        });
+      }
+    }
+  });
+  
+  // Emote
+  socket.on('emote', (data) => {
+    const tankId = playerTanks.get(socket.id);
+    if (!tankId) return;
+    
+    const tank = fishTanks.get(tankId);
+    if (tank) {
+      tank.handleEmote(socket.id, data);
+    }
+  });
+  
+  // Fish eaten
+  socket.on('eatFish', (data) => {
+    const tankId = playerTanks.get(socket.id);
+    if (!tankId) return;
+    
+    const tank = fishTanks.get(tankId);
+    if (tank && tank.handleFishEaten(socket.id, data.fishId)) {
+      // Broadcast to zone that fish was eaten
+      const player = tank.players.get(socket.id);
+      if (player) {
+        tank.broadcastToZone(player.zone, 'fishEaten', { fishId: data.fishId });
+      }
+    }
+  });
+  
+  // Leave Fish Tank
+  socket.on('leaveFishTank', () => {
+    const tankId = playerTanks.get(socket.id);
+    if (!tankId) return;
+    
+    const tank = fishTanks.get(tankId);
+    if (tank) {
+      const player = tank.players.get(socket.id);
+      if (player) {
+        tank.broadcastToZone(player.zone, 'playerLeft', socket.id);
+      }
+      tank.removePlayer(socket.id);
+    }
+    playerTanks.delete(socket.id);
+  });
+  
+  // Handle disconnect for Fish Tank
+  socket.on('disconnect', () => {
+    const tankId = playerTanks.get(socket.id);
+    if (tankId) {
+      const tank = fishTanks.get(tankId);
+      if (tank) {
+        const player = tank.players.get(socket.id);
+        if (player) {
+          tank.broadcastToZone(player.zone, 'playerLeft', socket.id);
+        }
+        tank.removePlayer(socket.id);
+      }
+      playerTanks.delete(socket.id);
+    }
+  });
+});
+
 // Graceful shutdown handler for Railway
 process.on('SIGTERM', () => {
   console.log('SIGTERM received - shutting down gracefully');
