@@ -1110,7 +1110,7 @@ const FISHTANK_CONFIG = {
   ZONE_HEIGHT: 800,
   FISH_PER_ZONE: 20,
   FISH_RESPAWN_TIME: 5000, // 5 seconds
-  TICK_RATE: 20 // Updates per second
+  TICK_RATE: 10 // Updates per second (reduced from 20 for smoother client-side prediction)
 };
 
 const ZONES = ['top-left', 'top-right', 'bottom-left', 'bottom-right'];
