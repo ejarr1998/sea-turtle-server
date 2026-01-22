@@ -1416,6 +1416,7 @@ class FishTank {
     return {
       zone: zoneName,
       players: players,
+      totalPlayers: this.players.size, // Total players in entire tank
       fish: zone.fish.map(f => ({
         id: f.id,
         x: Math.round(f.x),
