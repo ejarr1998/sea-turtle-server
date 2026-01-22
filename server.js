@@ -54,28 +54,37 @@ app.get('/player-count', (req, res) => {
 
 // Get current player counts across all modes
 function getPlayerCounts() {
-  let pvpPlayers = 0;
-  let fishTankPlayers = 0;
-  let queuePlayers = matchmakingQueue.length;
+  let lobbyPlayers = 0;
+  let singlePlayers = 0;
+  let multiPlayers = 0;
   
-  // Count PvP players in active games
-  for (const room of gameRooms.values()) {
-    pvpPlayers += room.players.size;
-  }
-  
-  // Count Fish Tank players (fishTanks is defined later, so we check if it exists)
-  if (typeof fishTanks !== 'undefined') {
-    for (const tank of fishTanks.values()) {
-      fishTankPlayers += tank.players.size;
+  // Count players by activity state
+  for (const [socketId, activity] of playerActivities) {
+    // Verify socket is still connected
+    const socket = io.sockets.sockets.get(socketId);
+    if (!socket) {
+      playerActivities.delete(socketId);
+      continue;
+    }
+    
+    switch (activity.state) {
+      case 'lobby':
+        lobbyPlayers++;
+        break;
+      case 'singleplayer':
+        singlePlayers++;
+        break;
+      case 'multiplayer':
+        multiPlayers++;
+        break;
     }
   }
   
   return {
-    total: pvpPlayers + fishTankPlayers + queuePlayers,
-    pvp: pvpPlayers,
-    fishTank: fishTankPlayers,
-    queue: queuePlayers,
-    connections: io.engine.clientsCount || 0
+    total: lobbyPlayers + singlePlayers + multiPlayers,
+    lobby: lobbyPlayers,
+    singleplayer: singlePlayers,
+    multiplayer: multiPlayers
   };
 }
 
@@ -1016,12 +1025,27 @@ function generateRoomCode() {
   return code;
 }
 
+// Track player activity states (for accurate online count)
+const playerActivities = new Map(); // socketId -> { state: 'lobby' | 'singleplayer' | 'multiplayer', timestamp }
+
 // Socket.IO connection handling
 io.on('connection', (socket) => {
   console.log(`Player connected: ${socket.id}`);
   
+  // Default to lobby state when connected
+  playerActivities.set(socket.id, { state: 'lobby', timestamp: Date.now() });
+  
   // Send current player count to newly connected client
   setTimeout(() => broadcastPlayerCount(), 100);
+  
+  // Track player activity state changes
+  socket.on('setActivity', (data) => {
+    const validStates = ['lobby', 'singleplayer', 'multiplayer'];
+    if (data && validStates.includes(data.state)) {
+      playerActivities.set(socket.id, { state: data.state, timestamp: Date.now() });
+      broadcastPlayerCount();
+    }
+  });
 
   // Auto-matchmaking system
   socket.on('findMatch', (data) => {
@@ -1120,6 +1144,9 @@ io.on('connection', (socket) => {
   socket.on('disconnect', () => {
     console.log(`Player disconnected: ${socket.id}`);
     
+    // Remove from activity tracking
+    playerActivities.delete(socket.id);
+    
     // Remove from matchmaking queue
     const queueIndex = matchmakingQueue.findIndex(p => p.socketId === socket.id);
     if (queueIndex !== -1) {
@@ -1187,7 +1214,8 @@ class FishTank {
       taggerId: null,
       lastTagTime: 0,
       tagCooldown: 2000, // 2 seconds before you can tag back
-      scores: new Map() // odId -> seconds survived
+      scores: new Map(), // odId -> seconds survived
+      participants: new Set() // Players actively participating in tag
     };
     
     // Initialize fish for each zone
@@ -1451,30 +1479,76 @@ class FishTank {
     
     this.tagMode.active = true;
     this.tagMode.lastTagTime = Date.now();
+    this.tagMode.participants.clear();
     
-    // Reset all players
-    this.players.forEach(player => {
+    // Reset all players and add them as participants
+    this.players.forEach((player, id) => {
       player.isIt = false;
       player.tagImmunityUntil = 0;
       player.survivalTime = 0;
+      player.playingTag = true;
+      this.tagMode.participants.add(id);
     });
     this.tagMode.scores.clear();
     this.players.forEach((_, id) => this.tagMode.scores.set(id, 0));
     
-    // Select random tagger
+    // Select random tagger from participants
     this.selectRandomTagger();
     
     // Broadcast tag mode started
     this.broadcastToAll('tagModeStarted', {
       taggerId: this.tagMode.taggerId,
-      taggerName: this.players.get(this.tagMode.taggerId)?.name
+      taggerName: this.players.get(this.tagMode.taggerId)?.name,
+      participantCount: this.tagMode.participants.size
     });
     
     console.log(`🏷️ Tag mode started in Tank ${this.id}!`);
     return { success: true };
   }
   
-  stopTagMode() {
+  // Player opts out of tag mode
+  leaveTagMode(playerId) {
+    if (!this.tagMode.active) {
+      return { success: false, message: 'Tag mode is not active' };
+    }
+    
+    const player = this.players.get(playerId);
+    if (!player) return { success: false };
+    
+    // Remove from participants
+    this.tagMode.participants.delete(playerId);
+    player.playingTag = false;
+    player.isIt = false;
+    
+    // Notify everyone this player left tag mode
+    this.broadcastToAll('playerLeftTag', {
+      playerId: playerId,
+      playerName: player.name,
+      participantCount: this.tagMode.participants.size
+    });
+    
+    // If they were the tagger, select a new one
+    if (this.tagMode.taggerId === playerId) {
+      if (this.tagMode.participants.size > 0) {
+        this.selectRandomTagger();
+        const newTagger = this.players.get(this.tagMode.taggerId);
+        this.broadcastToAll('newTagger', {
+          taggerId: this.tagMode.taggerId,
+          taggerName: newTagger?.name
+        });
+      }
+    }
+    
+    // If less than 2 participants, end tag mode for everyone
+    if (this.tagMode.participants.size < 2) {
+      this.endTagModeForAll();
+    }
+    
+    console.log(`🏷️ ${player.name} left tag mode in Tank ${this.id}`);
+    return { success: true };
+  }
+  
+  endTagModeForAll() {
     this.tagMode.active = false;
     
     // Clear tagger status
@@ -1484,16 +1558,27 @@ class FishTank {
     }
     this.tagMode.taggerId = null;
     
-    // Get final scores
+    // Clear all players' tag status
+    this.players.forEach(player => {
+      player.playingTag = false;
+      player.isIt = false;
+    });
+    
+    // Get final scores from participants only
     const scores = [];
-    this.players.forEach((player, id) => {
-      scores.push({
-        id: id,
-        name: player.name,
-        survivalTime: player.survivalTime || 0
-      });
+    this.tagMode.participants.forEach(id => {
+      const player = this.players.get(id);
+      if (player) {
+        scores.push({
+          id: id,
+          name: player.name,
+          survivalTime: player.survivalTime || 0
+        });
+      }
     });
     scores.sort((a, b) => b.survivalTime - a.survivalTime);
+    
+    this.tagMode.participants.clear();
     
     // Broadcast tag mode ended
     this.broadcastToAll('tagModeEnded', { scores });
@@ -1502,11 +1587,16 @@ class FishTank {
     return { success: true, scores };
   }
   
+  // Keep stopTagMode for backwards compatibility but make it call endTagModeForAll
+  stopTagMode() {
+    return this.endTagModeForAll();
+  }
+  
   selectRandomTagger() {
-    const playerIds = Array.from(this.players.keys());
-    if (playerIds.length === 0) return;
+    const participantIds = Array.from(this.tagMode.participants);
+    if (participantIds.length === 0) return;
     
-    const randomId = playerIds[Math.floor(Math.random() * playerIds.length)];
+    const randomId = participantIds[Math.floor(Math.random() * participantIds.length)];
     this.setTagger(randomId);
   }
   
@@ -1540,6 +1630,7 @@ class FishTank {
     // Check all players in the same zone
     this.zones[tagger.zone].players.forEach(playerId => {
       if (playerId === this.tagMode.taggerId) return; // Can't tag yourself
+      if (!this.tagMode.participants.has(playerId)) return; // Can only tag participants
       
       const target = this.players.get(playerId);
       if (!target) return;
@@ -1674,9 +1765,10 @@ io.on('connection', (socket) => {
       playerCount: tank.players.size
     });
     
-    // Notify others in the zone
-    tank.broadcastToZone(player.zone, 'playerJoined', {
-      player: tank.getPlayerData(player)
+    // Notify ALL players in the tank that someone joined
+    tank.broadcastToAll('playerJoinedTank', {
+      player: tank.getPlayerData(player),
+      playerCount: tank.players.size
     });
     
     // Broadcast updated player count
@@ -1714,10 +1806,7 @@ io.on('connection', (socket) => {
         // Notify player of zone change
         socket.emit('zoneChanged', { playerId: socket.id, zone: data.zone });
         
-        // Notify new zone
-        tank.broadcastToZone(data.zone, 'playerJoined', {
-          player: tank.getPlayerData(player)
-        });
+        // Don't notify zone of player entering - it's just moving between zones, not joining tank
       }
     }
   });
@@ -1760,14 +1849,14 @@ io.on('connection', (socket) => {
     }
   });
   
-  // Stop Tag Mode
+  // Leave Tag Mode (individual player opts out)
   socket.on('stopTagMode', () => {
     const tankId = playerTanks.get(socket.id);
     if (!tankId) return;
     
     const tank = fishTanks.get(tankId);
     if (tank) {
-      const result = tank.stopTagMode();
+      const result = tank.leaveTagMode(socket.id);
       socket.emit('tagModeResponse', result);
     }
   });
@@ -1781,9 +1870,39 @@ io.on('connection', (socket) => {
     if (tank) {
       const player = tank.players.get(socket.id);
       if (player) {
-        tank.broadcastToZone(player.zone, 'playerLeft', socket.id);
+        // Notify ALL players in tank that someone left
+        tank.broadcastToAll('playerLeftTank', {
+          playerId: socket.id,
+          playerName: player.name,
+          playerCount: tank.players.size - 1
+        });
+        
+        // Handle tag mode participant leaving
+        if (tank.tagMode.active && tank.tagMode.participants.has(socket.id)) {
+          tank.tagMode.participants.delete(socket.id);
+          
+          // If they were the tagger, select a new one
+          if (tank.tagMode.taggerId === socket.id) {
+            if (tank.tagMode.participants.size > 0) {
+              tank.selectRandomTagger();
+              const newTagger = tank.players.get(tank.tagMode.taggerId);
+              tank.broadcastToAll('newTagger', {
+                taggerId: tank.tagMode.taggerId,
+                taggerName: newTagger?.name || 'Someone'
+              });
+            }
+          }
+          
+          // End tag mode if less than 2 participants
+          if (tank.tagMode.participants.size < 2) {
+            tank.endTagModeForAll();
+          }
+        }
+        
+        tank.removePlayer(socket.id);
+      } else {
+        tank.removePlayer(socket.id);
       }
-      tank.removePlayer(socket.id);
     }
     playerTanks.delete(socket.id);
     
@@ -1799,9 +1918,39 @@ io.on('connection', (socket) => {
       if (tank) {
         const player = tank.players.get(socket.id);
         if (player) {
-          tank.broadcastToZone(player.zone, 'playerLeft', socket.id);
+          // Notify ALL players in tank that someone left
+          tank.broadcastToAll('playerLeftTank', {
+            playerId: socket.id,
+            playerName: player.name,
+            playerCount: tank.players.size - 1
+          });
+          
+          // Handle tag mode participant disconnecting
+          if (tank.tagMode.active && tank.tagMode.participants.has(socket.id)) {
+            tank.tagMode.participants.delete(socket.id);
+            
+            // If they were the tagger, select a new one
+            if (tank.tagMode.taggerId === socket.id) {
+              if (tank.tagMode.participants.size > 0) {
+                tank.selectRandomTagger();
+                const newTagger = tank.players.get(tank.tagMode.taggerId);
+                tank.broadcastToAll('newTagger', {
+                  taggerId: tank.tagMode.taggerId,
+                  taggerName: newTagger?.name || 'Someone'
+                });
+              }
+            }
+            
+            // End tag mode if less than 2 participants
+            if (tank.tagMode.participants.size < 2) {
+              tank.endTagModeForAll();
+            }
+          }
+          
+          tank.removePlayer(socket.id);
+        } else {
+          tank.removePlayer(socket.id);
         }
-        tank.removePlayer(socket.id);
       }
       playerTanks.delete(socket.id);
       
