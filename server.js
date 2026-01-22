@@ -836,22 +836,27 @@ class GameRoom {
     // Apply input
     if (input.left) player.vx -= currentSpeed * 0.2;
     if (input.right) player.vx += currentSpeed * 0.2;
-    if (input.up) player.vy -= currentSpeed * 0.2;
-    if (input.down) player.vy += currentSpeed * 0.2;
+    
+    // Pufferfish gets boosted vertical input (2x up, 1.25x down)
+    let verticalMultiplier = 1;
+    if (player.character === 'pufferfish') {
+      if (input.up) verticalMultiplier = 2;
+      else if (input.down) verticalMultiplier = 1.25;
+    }
+    
+    if (input.up) player.vy -= currentSpeed * 0.2 * verticalMultiplier;
+    if (input.down) player.vy += currentSpeed * 0.2 * verticalMultiplier;
 
     // Joystick input
     if (input.joystick) {
       player.vx += input.joystick.x * currentSpeed * 0.15;
-      player.vy += input.joystick.y * currentSpeed * 0.15;
-    }
-
-    // Pufferfish gets vertical speed boost (2x up, 1.25x down)
-    if (player.character === 'pufferfish') {
-      if (player.vy < 0) {
-        player.vy *= 2; // Double speed going up
-      } else if (player.vy > 0) {
-        player.vy *= 1.25; // 1.25x speed going down
+      // Apply pufferfish multiplier to joystick vertical input
+      let joystickVerticalMult = 1;
+      if (player.character === 'pufferfish') {
+        if (input.joystick.y < 0) joystickVerticalMult = 2;
+        else if (input.joystick.y > 0) joystickVerticalMult = 1.25;
       }
+      player.vy += input.joystick.y * currentSpeed * 0.15 * joystickVerticalMult;
     }
 
     // Cap speed (but allow pufferfish higher vertical cap)
