@@ -508,7 +508,11 @@ class GameRoom {
         shark.x = Math.max(shark.size, Math.min(GAME_WIDTH - shark.size, shark.x));
         shark.y = Math.max(shark.size, Math.min(GAME_HEIGHT - shark.size, shark.y));
 
-        // Check collision using UPDATED position
+        // Check collision using UPDATED position (only if shark is on screen)
+        const sharkOnScreen = shark.x > -shark.size && shark.x < GAME_WIDTH + shark.size && 
+                              shark.y > -shark.size && shark.y < GAME_HEIGHT + shark.size;
+        if (!sharkOnScreen) continue;
+        
         const newDx = nearestPlayer.x - shark.x;
         const newDy = nearestPlayer.y - shark.y;
         const newDist = Math.sqrt(newDx * newDx + newDy * newDy);
@@ -608,6 +612,11 @@ class GameRoom {
     this.seahorses = this.seahorses.filter(seahorse => {
       if (Date.now() > seahorse.despawnTime) return false;
 
+      // Only allow collection if seahorse is on screen
+      const seahorseOnScreen = seahorse.x > 0 && seahorse.x < GAME_WIDTH && 
+                               seahorse.y > 0 && seahorse.y < GAME_HEIGHT;
+      if (!seahorseOnScreen) return true;
+
       for (const player of this.players.values()) {
         if (!player.alive) continue;
         const dx = player.x - seahorse.x;
@@ -653,6 +662,11 @@ class GameRoom {
     
     this.octopuses = this.octopuses.filter(octopus => {
       if (Date.now() > octopus.despawnTime) return false;
+
+      // Only allow collection if octopus is on screen
+      const octopusOnScreen = octopus.x > 0 && octopus.x < GAME_WIDTH && 
+                              octopus.y > 0 && octopus.y < GAME_HEIGHT;
+      if (!octopusOnScreen) return true;
 
       for (const player of this.players.values()) {
         if (!player.alive) continue;
