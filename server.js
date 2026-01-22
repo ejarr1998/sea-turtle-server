@@ -1467,7 +1467,8 @@ class FishTank {
       zone: player.zone,
       isIt: player.isIt || false,
       tagImmune: Date.now() < (player.tagImmunityUntil || 0),
-      survivalTime: player.survivalTime || 0
+      survivalTime: player.survivalTime || 0,
+      hidden: player.hidden || false
     };
   }
   
@@ -1828,6 +1829,20 @@ io.on('connection', (socket) => {
       const player = tank.players.get(socket.id);
       if (player) {
         tank.broadcastToZone(player.zone, 'fishEaten', { fishId: data.fishId });
+      }
+    }
+  });
+  
+  // Hiding status update
+  socket.on('hidingStatus', (data) => {
+    const tankId = playerTanks.get(socket.id);
+    if (!tankId) return;
+    
+    const tank = fishTanks.get(tankId);
+    if (tank) {
+      const player = tank.players.get(socket.id);
+      if (player) {
+        player.hidden = data.hidden || false;
       }
     }
   });
