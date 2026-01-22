@@ -66,7 +66,9 @@ const COLLISION_RADII = {
   sailfish: 0.55,
   seadragon: 0.60,
   penguin: 0.55,
-  dolphin: 0.55
+  dolphin: 0.55,
+  clownfish: 0.65,
+  bluetang: 0.6
 };
 
 // Base speeds by character
@@ -78,7 +80,9 @@ const BASE_SPEEDS = {
   turtle: 4,
   seal: 4,
   penguin: 5,
-  dolphin: 6
+  dolphin: 6,
+  clownfish: 4,
+  bluetang: 5
 };
 
 // Fish colors
