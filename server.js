@@ -1181,6 +1181,15 @@ class FishTank {
     };
     this.updateInterval = null;
     
+    // Tag mode state
+    this.tagMode = {
+      active: false,
+      taggerId: null,
+      lastTagTime: 0,
+      tagCooldown: 2000, // 2 seconds before you can tag back
+      scores: new Map() // odId -> seconds survived
+    };
+    
     // Initialize fish for each zone
     ZONES.forEach(zone => {
       this.spawnInitialFish(zone);
@@ -1211,7 +1220,7 @@ class FishTank {
   }
   
   addPlayer(socketId, playerData) {
-    const startZone = 'top-left'; // Everyone starts in Coral Garden
+    const startZone = 'top-left'; // Everyone starts in Filter Corner
     const player = {
       id: socketId,
       name: playerData.playerName || 'Player',
@@ -1221,17 +1230,28 @@ class FishTank {
       y: FISHTANK_CONFIG.ZONE_HEIGHT / 2,
       vx: 0,
       vy: 0,
-      rotation: 0
+      rotation: 0,
+      isIt: false,
+      tagImmunityUntil: 0, // Timestamp when immunity ends
+      survivalTime: 0 // Seconds survived without being tagged
     };
     
     this.players.set(socketId, player);
     this.zones[startZone].players.add(socketId);
+    
+    // Initialize tag score
+    this.tagMode.scores.set(socketId, 0);
     
     console.log(`🐠 Player ${player.name} joined Tank ${this.id} (${this.players.size} players)`);
     
     // Start update loop if this is the first player
     if (this.players.size === 1) {
       this.startUpdateLoop();
+    }
+    
+    // If tag mode is active and this is the second player, they could be "it"
+    if (this.tagMode.active && !this.tagMode.taggerId) {
+      this.selectRandomTagger();
     }
     
     return player;
@@ -1331,6 +1351,12 @@ class FishTank {
   }
   
   update() {
+    // Update tag mode
+    if (this.tagMode.active) {
+      this.checkTagCollisions();
+      this.updateTagSurvivalTimes();
+    }
+    
     // Update fish in each zone
     ZONES.forEach(zoneName => {
       const zone = this.zones[zoneName];
@@ -1359,9 +1385,13 @@ class FishTank {
         }
       });
       
-      // Broadcast state to players in this zone
+      // Broadcast state to players in this zone (include tag mode info)
       if (zone.players.size > 0) {
         const state = this.getZoneState(zoneName);
+        state.tagMode = {
+          active: this.tagMode.active,
+          taggerId: this.tagMode.taggerId
+        };
         zone.players.forEach(playerId => {
           const socket = io.sockets.sockets.get(playerId);
           if (socket) {
@@ -1405,8 +1435,174 @@ class FishTank {
       x: Math.round(player.x),
       y: Math.round(player.y),
       rotation: player.rotation,
-      zone: player.zone
+      zone: player.zone,
+      isIt: player.isIt || false,
+      tagImmune: Date.now() < (player.tagImmunityUntil || 0),
+      survivalTime: player.survivalTime || 0
     };
+  }
+  
+  // Tag mode methods
+  startTagMode() {
+    if (this.players.size < 2) {
+      return { success: false, message: 'Need at least 2 players for tag!' };
+    }
+    
+    this.tagMode.active = true;
+    this.tagMode.lastTagTime = Date.now();
+    
+    // Reset all players
+    this.players.forEach(player => {
+      player.isIt = false;
+      player.tagImmunityUntil = 0;
+      player.survivalTime = 0;
+    });
+    this.tagMode.scores.clear();
+    this.players.forEach((_, id) => this.tagMode.scores.set(id, 0));
+    
+    // Select random tagger
+    this.selectRandomTagger();
+    
+    // Broadcast tag mode started
+    this.broadcastToAll('tagModeStarted', {
+      taggerId: this.tagMode.taggerId,
+      taggerName: this.players.get(this.tagMode.taggerId)?.name
+    });
+    
+    console.log(`🏷️ Tag mode started in Tank ${this.id}!`);
+    return { success: true };
+  }
+  
+  stopTagMode() {
+    this.tagMode.active = false;
+    
+    // Clear tagger status
+    if (this.tagMode.taggerId) {
+      const tagger = this.players.get(this.tagMode.taggerId);
+      if (tagger) tagger.isIt = false;
+    }
+    this.tagMode.taggerId = null;
+    
+    // Get final scores
+    const scores = [];
+    this.players.forEach((player, id) => {
+      scores.push({
+        id: id,
+        name: player.name,
+        survivalTime: player.survivalTime || 0
+      });
+    });
+    scores.sort((a, b) => b.survivalTime - a.survivalTime);
+    
+    // Broadcast tag mode ended
+    this.broadcastToAll('tagModeEnded', { scores });
+    
+    console.log(`🏷️ Tag mode ended in Tank ${this.id}`);
+    return { success: true, scores };
+  }
+  
+  selectRandomTagger() {
+    const playerIds = Array.from(this.players.keys());
+    if (playerIds.length === 0) return;
+    
+    const randomId = playerIds[Math.floor(Math.random() * playerIds.length)];
+    this.setTagger(randomId);
+  }
+  
+  setTagger(playerId) {
+    // Clear old tagger
+    if (this.tagMode.taggerId) {
+      const oldTagger = this.players.get(this.tagMode.taggerId);
+      if (oldTagger) oldTagger.isIt = false;
+    }
+    
+    // Set new tagger
+    this.tagMode.taggerId = playerId;
+    const newTagger = this.players.get(playerId);
+    if (newTagger) {
+      newTagger.isIt = true;
+      newTagger.tagImmunityUntil = 0; // Tagger has no immunity
+    }
+    
+    this.tagMode.lastTagTime = Date.now();
+  }
+  
+  checkTagCollisions() {
+    if (!this.tagMode.active || !this.tagMode.taggerId) return;
+    
+    const tagger = this.players.get(this.tagMode.taggerId);
+    if (!tagger) return;
+    
+    const now = Date.now();
+    const tagRadius = 50; // How close to tag someone
+    
+    // Check all players in the same zone
+    this.zones[tagger.zone].players.forEach(playerId => {
+      if (playerId === this.tagMode.taggerId) return; // Can't tag yourself
+      
+      const target = this.players.get(playerId);
+      if (!target) return;
+      
+      // Check if target is immune
+      if (now < target.tagImmunityUntil) return;
+      
+      // Check distance
+      const dx = tagger.x - target.x;
+      const dy = tagger.y - target.y;
+      const distance = Math.sqrt(dx * dx + dy * dy);
+      
+      if (distance < tagRadius) {
+        // Tag!
+        this.performTag(playerId);
+      }
+    });
+  }
+  
+  performTag(newTaggerId) {
+    const oldTaggerId = this.tagMode.taggerId;
+    const oldTagger = this.players.get(oldTaggerId);
+    const newTagger = this.players.get(newTaggerId);
+    
+    if (!newTagger) return;
+    
+    // Old tagger gets immunity
+    if (oldTagger) {
+      oldTagger.isIt = false;
+      oldTagger.tagImmunityUntil = Date.now() + this.tagMode.tagCooldown;
+    }
+    
+    // Set new tagger
+    this.setTagger(newTaggerId);
+    
+    // Broadcast the tag event
+    this.broadcastToAll('playerTagged', {
+      taggerId: oldTaggerId,
+      taggerName: oldTagger?.name,
+      taggedId: newTaggerId,
+      taggedName: newTagger.name
+    });
+    
+    console.log(`🏷️ ${oldTagger?.name} tagged ${newTagger.name}!`);
+  }
+  
+  updateTagSurvivalTimes() {
+    if (!this.tagMode.active) return;
+    
+    // Increment survival time for all non-taggers
+    this.players.forEach((player, id) => {
+      if (!player.isIt) {
+        player.survivalTime = (player.survivalTime || 0) + 0.1; // Called 10 times/sec
+      }
+    });
+  }
+  
+  broadcastToAll(event, data) {
+    this.players.forEach((_, playerId) => {
+      const socket = io.sockets.sockets.get(playerId);
+      if (socket) {
+        socket.emit(event, data);
+      }
+    });
   }
   
   broadcastToZone(zoneName, event, data) {
@@ -1548,6 +1744,30 @@ io.on('connection', (socket) => {
       if (player) {
         tank.broadcastToZone(player.zone, 'fishEaten', { fishId: data.fishId });
       }
+    }
+  });
+  
+  // Start Tag Mode
+  socket.on('startTagMode', () => {
+    const tankId = playerTanks.get(socket.id);
+    if (!tankId) return;
+    
+    const tank = fishTanks.get(tankId);
+    if (tank) {
+      const result = tank.startTagMode();
+      socket.emit('tagModeResponse', result);
+    }
+  });
+  
+  // Stop Tag Mode
+  socket.on('stopTagMode', () => {
+    const tankId = playerTanks.get(socket.id);
+    if (!tankId) return;
+    
+    const tank = fishTanks.get(tankId);
+    if (tank) {
+      const result = tank.stopTagMode();
+      socket.emit('tagModeResponse', result);
     }
   });
   
