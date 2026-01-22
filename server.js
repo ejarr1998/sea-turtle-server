@@ -1625,7 +1625,7 @@ class FishTank {
     if (!tagger) return;
     
     const now = Date.now();
-    const tagRadius = 50; // How close to tag someone
+    const tagRadius = 75; // How close to tag someone (generous hitbox for fun gameplay)
     
     // Check all players in the same zone
     this.zones[tagger.zone].players.forEach(playerId => {
@@ -1795,18 +1795,13 @@ io.on('connection', (socket) => {
     if (tank) {
       const player = tank.players.get(socket.id);
       if (player) {
-        // Notify old zone
-        tank.broadcastToZone(player.zone, 'playerLeft', socket.id);
-        
-        // Update zone
+        // Update zone - no notifications needed for zone changes
         tank.zones[player.zone].players.delete(socket.id);
         player.zone = data.zone;
         tank.zones[data.zone].players.add(socket.id);
         
-        // Notify player of zone change
+        // Notify player of zone change (for local UI update only)
         socket.emit('zoneChanged', { playerId: socket.id, zone: data.zone });
-        
-        // Don't notify zone of player entering - it's just moving between zones, not joining tank
       }
     }
   });
