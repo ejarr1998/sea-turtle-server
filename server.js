@@ -212,7 +212,10 @@ class GameRoom {
     const playerCount = this.players.size;
     const spawnX = GAME_WIDTH / 2 + (playerCount === 0 ? -50 : 50);
     const spawnY = GAME_HEIGHT / 2;
-    const size = character === 'seadragon' ? 50 : 35;
+    // Set base size by character
+    let size = 35;
+    if (character === 'seadragon') size = 50;
+    else if (character === 'dolphin' || character === 'penguin') size = 40;
     const collisionRadius = size * (COLLISION_RADII[character] || 0.6);
     
     console.log(`✅ Player ${playerName} spawning at center (${Math.round(spawnX)}, ${Math.round(spawnY)})`);
