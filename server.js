@@ -1157,8 +1157,8 @@ const FISHTANK_CONFIG = {
   MAX_PLAYERS_PER_TANK: 10,
   ZONE_WIDTH: 1200,
   ZONE_HEIGHT: 800,
-  FISH_PER_ZONE: 20,
-  FISH_RESPAWN_TIME: 5000, // 5 seconds
+  FISH_PER_ZONE: 5, // Reduced for cleaner look
+  FISH_RESPAWN_TIME: 8000, // 8 seconds
   TICK_RATE: 10 // Updates per second (reduced from 20 for smoother client-side prediction)
 };
 
