@@ -14,10 +14,9 @@ const io = require('socket.io')(http, {
     methods: ["GET", "POST"],
     credentials: true
   },
-  pingTimeout: 30000,
-  pingInterval: 10000,
-  transports: ['websocket', 'polling'],  // Allow polling fallback for compatibility
-  allowUpgrades: true
+  pingTimeout: 60000,
+  pingInterval: 25000,
+  transports: ['websocket', 'polling']
 });
 const path = require('path');
 
@@ -101,8 +100,8 @@ app.use(express.static(path.join(__dirname, 'public')));
 // Game constants - matching client
 const GAME_WIDTH = 1000;
 const GAME_HEIGHT = 1000;
-const TICK_RATE = 60;        // Physics updates per second (keep at 60 for smooth gameplay)
-const BROADCAST_RATE = 20;   // Network updates per second (reduced from 60 to save bandwidth)
+const TICK_RATE = 60;        // Physics updates per second
+const BROADCAST_RATE = 60;   // Network updates per second (matching tick rate)
 
 // Active game rooms
 const gameRooms = new Map();
@@ -939,7 +938,7 @@ class GameRoom {
   }
 
   broadcastGameState() {
-    // Optimized game state - remove unnecessary fields, round numbers
+    // Optimized game state - only essential fields, numbers rounded
     const gameState = {
       players: Array.from(this.players.values()).map(p => ({
         id: p.id,
@@ -966,6 +965,7 @@ class GameRoom {
         y: Math.round(s.y),
         rotation: Math.round(s.rotation * 100) / 100,
         size: s.size,
+        swimPhase: s.swimPhase || 0,
         isMegaShark: s.isMegaShark || false,
         confused: s.confused || false
       })),
@@ -973,19 +973,23 @@ class GameRoom {
         x: Math.round(j.x),
         y: Math.round(j.y),
         size: j.size,
+        wobble: j.wobble,
+        tentacles: j.tentacles,
         pulsePhase: Math.round(j.pulsePhase * 100) / 100
       })),
       seahorses: this.seahorses.map(s => ({
         x: Math.round(s.x),
         y: Math.round(s.y),
         size: s.size,
+        bobPhase: s.bobPhase,
         direction: s.direction
       })),
       octopuses: this.octopuses.map(o => ({
         x: Math.round(o.x),
         y: Math.round(o.y),
         size: o.size,
-        direction: o.direction
+        direction: o.direction,
+        tentaclePhase: o.tentaclePhase
       })),
       inkClouds: this.inkClouds.map(i => ({
         x: Math.round(i.x),
@@ -1764,13 +1768,13 @@ setInterval(() => {
   }
 }, 60000); // Check every minute
 
-// Fish Tank socket handlers (add to existing io.on('connection'))
-// We need to add these handlers in the existing connection handler
+// Fish Tank socket handlers - these are added via a second io.on('connection') call
+// Socket.IO supports multiple connection handlers, they all get called
 
 // Store player's current tank
 const playerTanks = new Map(); // socketId -> tankId
 
-// Add Fish Tank handlers to the main socket connection
+// Fish Tank connection handlers
 io.on('connection', (socket) => {
   // Join Fish Tank
   socket.on('joinFishTank', (data) => {
