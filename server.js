@@ -14,9 +14,11 @@ const io = require('socket.io')(http, {
     methods: ["GET", "POST"],
     credentials: true
   },
-  pingTimeout: 60000,      // 60 seconds before considering connection dead
-  pingInterval: 25000,     // Send ping every 25 seconds
-  transports: ['websocket', 'polling']
+  pingTimeout: 30000,         // 30 seconds before considering connection dead
+  pingInterval: 10000,        // Send ping every 10 seconds (faster detection of disconnects)
+  transports: ['websocket'],  // Prefer websocket only for lower latency (no polling fallback)
+  perMessageDeflate: false,   // Disable compression for lower latency
+  httpCompression: false      // Disable HTTP compression for lower latency
 });
 const path = require('path');
 
@@ -100,8 +102,8 @@ app.use(express.static(path.join(__dirname, 'public')));
 // Game constants - matching client
 const GAME_WIDTH = 1000;
 const GAME_HEIGHT = 1000;
-const TICK_RATE = 60;        // Physics updates per second (internal)
-const BROADCAST_RATE = 60;   // Network updates per second (sent to clients)
+const TICK_RATE = 30;        // Physics updates per second (reduced from 60)
+const BROADCAST_RATE = 20;   // Network updates per second (reduced from 60 - 20 is plenty for smooth gameplay)
 
 // Active game rooms
 const gameRooms = new Map();
@@ -938,6 +940,7 @@ class GameRoom {
   }
 
   broadcastGameState() {
+    // Optimized game state - remove unnecessary fields, round numbers
     const gameState = {
       players: Array.from(this.players.values()).map(p => ({
         id: p.id,
@@ -956,16 +959,14 @@ class GameRoom {
         y: Math.round(f.y),
         size: f.size,
         type: f.type,
-        direction: f.direction || Math.atan2(f.vy, f.vx),
-        color: f.color,
-        speed: f.speed
+        direction: Math.round((f.direction || Math.atan2(f.vy, f.vx)) * 100) / 100,
+        color: f.color
       })),
       sharks: this.sharks.map(s => ({
         x: Math.round(s.x),
         y: Math.round(s.y),
         rotation: Math.round(s.rotation * 100) / 100,
         size: s.size,
-        swimPhase: s.swimPhase || 0,
         isMegaShark: s.isMegaShark || false,
         confused: s.confused || false
       })),
@@ -973,28 +974,19 @@ class GameRoom {
         x: Math.round(j.x),
         y: Math.round(j.y),
         size: j.size,
-        speed: j.speed,
-        wobble: j.wobble,
-        wobbleSpeed: j.wobbleSpeed,
-        tentacles: j.tentacles,
         pulsePhase: Math.round(j.pulsePhase * 100) / 100
       })),
       seahorses: this.seahorses.map(s => ({
         x: Math.round(s.x),
         y: Math.round(s.y),
         size: s.size,
-        bobPhase: s.bobPhase,
-        bobSpeed: s.bobSpeed,
-        direction: s.direction,
-        speed: s.speed
+        direction: s.direction
       })),
       octopuses: this.octopuses.map(o => ({
         x: Math.round(o.x),
         y: Math.round(o.y),
         size: o.size,
-        direction: o.direction,
-        tentaclePhase: o.tentaclePhase,
-        speed: o.speed
+        direction: o.direction
       })),
       inkClouds: this.inkClouds.map(i => ({
         x: Math.round(i.x),
@@ -1008,7 +1000,7 @@ class GameRoom {
         opacity: Math.round(w.opacity * 100) / 100
       })),
       megaSharkActive: this.megaSharkActive,
-      serverTime: Date.now() // Timestamp for client interpolation
+      serverTime: Date.now()
     };
 
     io.to(this.roomId).emit('gameState', gameState);
