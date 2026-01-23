@@ -1052,6 +1052,23 @@ io.on('connection', (socket) => {
     console.log(`🔍 Player ${socket.id} looking for match`);
     console.log(`   Character: ${data.character}, Name: ${data.playerName}`);
     
+    // Clean up any stale entries (sockets that no longer exist)
+    for (let i = matchmakingQueue.length - 1; i >= 0; i--) {
+      const entry = matchmakingQueue[i];
+      const entrySocket = io.sockets.sockets.get(entry.socketId);
+      if (!entrySocket || !entrySocket.connected) {
+        console.log(`🧹 Removing stale queue entry: ${entry.socketId}`);
+        matchmakingQueue.splice(i, 1);
+      }
+    }
+    
+    // Check if this player is already in the queue
+    const existingIndex = matchmakingQueue.findIndex(p => p.socketId === socket.id);
+    if (existingIndex !== -1) {
+      console.log(`⚠️ Player ${socket.id} already in queue, updating entry`);
+      matchmakingQueue.splice(existingIndex, 1);
+    }
+    
     const nightMode = Math.random() < 0.5;
     const difficulty = 'medium';
     
@@ -1059,10 +1076,12 @@ io.on('connection', (socket) => {
       socketId: socket.id,
       character: data.character,
       playerName: data.playerName,
-      nightMode
+      nightMode,
+      joinedAt: Date.now()
     });
     
     console.log(`📊 Queue size: ${matchmakingQueue.length}`);
+    console.log(`   Queue contents: ${matchmakingQueue.map(p => p.playerName).join(', ')}`);
     broadcastPlayerCount(); // Update count when someone joins queue
     
     if (matchmakingQueue.length >= 2) {
@@ -1127,6 +1146,17 @@ io.on('connection', (socket) => {
     } else {
       console.log(`⏳ Waiting for more players...`);
       socket.emit('waitingForMatch', { queuePosition: matchmakingQueue.length });
+    }
+  });
+  
+  // Cancel matchmaking
+  socket.on('cancelFindMatch', () => {
+    const queueIndex = matchmakingQueue.findIndex(p => p.socketId === socket.id);
+    if (queueIndex !== -1) {
+      matchmakingQueue.splice(queueIndex, 1);
+      console.log(`❌ Player ${socket.id} cancelled matchmaking. Queue size: ${matchmakingQueue.length}`);
+      socket.emit('matchmakingCancelled');
+      broadcastPlayerCount();
     }
   });
 
