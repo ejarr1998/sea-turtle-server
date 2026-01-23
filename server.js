@@ -14,11 +14,10 @@ const io = require('socket.io')(http, {
     methods: ["GET", "POST"],
     credentials: true
   },
-  pingTimeout: 30000,         // 30 seconds before considering connection dead
-  pingInterval: 10000,        // Send ping every 10 seconds (faster detection of disconnects)
-  transports: ['websocket'],  // Prefer websocket only for lower latency (no polling fallback)
-  perMessageDeflate: false,   // Disable compression for lower latency
-  httpCompression: false      // Disable HTTP compression for lower latency
+  pingTimeout: 30000,
+  pingInterval: 10000,
+  transports: ['websocket', 'polling'],  // Allow polling fallback for compatibility
+  allowUpgrades: true
 });
 const path = require('path');
 
@@ -102,8 +101,8 @@ app.use(express.static(path.join(__dirname, 'public')));
 // Game constants - matching client
 const GAME_WIDTH = 1000;
 const GAME_HEIGHT = 1000;
-const TICK_RATE = 30;        // Physics updates per second (reduced from 60)
-const BROADCAST_RATE = 20;   // Network updates per second (reduced from 60 - 20 is plenty for smooth gameplay)
+const TICK_RATE = 60;        // Physics updates per second (keep at 60 for smooth gameplay)
+const BROADCAST_RATE = 20;   // Network updates per second (reduced from 60 to save bandwidth)
 
 // Active game rooms
 const gameRooms = new Map();
