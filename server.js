@@ -1853,6 +1853,10 @@ class FishTank {
     
     this.infectedMode.active = false;
     
+    // Clear infected and survivors sets
+    this.infectedMode.infected.clear();
+    this.infectedMode.survivors.clear();
+    
     // Clear infected status from all players
     this.players.forEach(player => {
       player.isInfected = false;
