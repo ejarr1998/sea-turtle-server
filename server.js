@@ -1243,6 +1243,16 @@ class FishTank {
       participants: new Set() // Players actively participating in tag
     };
     
+    // Infected mode state
+    this.infectedMode = {
+      active: false,
+      infected: new Set(), // Set of infected player IDs
+      survivors: new Set(), // Set of non-infected player IDs
+      startTime: 0,
+      lastInfectTime: 0,
+      infectCooldown: 1500 // 1.5 seconds before newly infected can infect others
+    };
+    
     // Initialize fish for each zone
     ZONES.forEach(zone => {
       this.spawnInitialFish(zone);
@@ -1316,6 +1326,11 @@ class FishTank {
       this.zones[player.zone].players.delete(socketId);
       this.players.delete(socketId);
       console.log(`🐠 Player left Tank ${this.id} (${this.players.size} players remaining)`);
+      
+      // Handle infected mode player leaving
+      if (this.infectedMode.active) {
+        this.handleInfectedPlayerLeave(socketId);
+      }
       
       // Stop update loop if empty
       if (this.players.size === 0) {
@@ -1410,6 +1425,11 @@ class FishTank {
       this.updateTagSurvivalTimes();
     }
     
+    // Update infected mode
+    if (this.infectedMode.active) {
+      this.checkInfectedCollisions();
+    }
+    
     // Update fish in each zone
     ZONES.forEach(zoneName => {
       const zone = this.zones[zoneName];
@@ -1438,12 +1458,17 @@ class FishTank {
         }
       });
       
-      // Broadcast state to players in this zone (include tag mode info)
+      // Broadcast state to players in this zone (include tag mode and infected mode info)
       if (zone.players.size > 0) {
         const state = this.getZoneState(zoneName);
         state.tagMode = {
           active: this.tagMode.active,
           taggerId: this.tagMode.taggerId
+        };
+        state.infectedMode = {
+          active: this.infectedMode.active,
+          infected: Array.from(this.infectedMode.infected),
+          survivorCount: this.infectedMode.survivors.size
         };
         zone.players.forEach(playerId => {
           const socket = io.sockets.sockets.get(playerId);
@@ -1497,7 +1522,9 @@ class FishTank {
       isIt: player.isIt || false,
       tagImmune: Date.now() < (player.tagImmunityUntil || 0),
       survivalTime: player.survivalTime || 0,
-      hidden: player.hidden || false
+      hidden: player.hidden || false,
+      isInfected: this.infectedMode.infected.has(player.id),
+      canInfect: this.infectedMode.infected.has(player.id) && Date.now() > (player.infectCooldownUntil || 0)
     };
   }
   
@@ -1576,6 +1603,39 @@ class FishTank {
     
     console.log(`🏷️ ${player.name} left tag mode in Tank ${this.id}`);
     return { success: true };
+  }
+  
+  // Player joins an in-progress tag game
+  joinTagMode(playerId) {
+    if (!this.tagMode.active) {
+      return { success: false, message: 'No tag game in progress' };
+    }
+    
+    const player = this.players.get(playerId);
+    if (!player) return { success: false };
+    
+    // Check if already participating
+    if (this.tagMode.participants.has(playerId)) {
+      return { success: false, message: 'Already in tag game' };
+    }
+    
+    // Add to participants
+    this.tagMode.participants.add(playerId);
+    player.playingTag = true;
+    player.isIt = false;
+    player.tagImmunityUntil = Date.now() + 3000; // 3 second immunity when joining
+    player.survivalTime = 0; // Start fresh
+    this.tagMode.scores.set(playerId, 0);
+    
+    // Notify everyone
+    this.broadcastToAll('playerJoinedTag', {
+      playerId: playerId,
+      playerName: player.name,
+      participantCount: this.tagMode.participants.size
+    });
+    
+    console.log(`🏷️ ${player.name} joined tag mode in Tank ${this.id}`);
+    return { success: true, message: `Joined tag! You have 3 seconds immunity.` };
   }
   
   endTagModeForAll() {
@@ -1716,6 +1776,177 @@ class FishTank {
         player.survivalTime = (player.survivalTime || 0) + 0.1; // Called 10 times/sec
       }
     });
+  }
+  
+  // ============================================
+  // INFECTED MODE METHODS
+  // ============================================
+  
+  startInfectedMode() {
+    if (this.players.size < 2) {
+      return { success: false, message: 'Need at least 2 players for Infected!' };
+    }
+    
+    // Can't start if tag mode is active
+    if (this.tagMode.active) {
+      return { success: false, message: 'Tag mode is already active!' };
+    }
+    
+    // Can't start if infected mode already active
+    if (this.infectedMode.active) {
+      return { success: false, message: 'Infected mode is already running!' };
+    }
+    
+    this.infectedMode.active = true;
+    this.infectedMode.startTime = Date.now();
+    this.infectedMode.infected.clear();
+    this.infectedMode.survivors.clear();
+    
+    // Add all players as survivors
+    this.players.forEach((player, id) => {
+      this.infectedMode.survivors.add(id);
+      player.isInfected = false;
+      player.infectCooldownUntil = 0;
+    });
+    
+    // Pick random player to be first infected
+    const playerIds = Array.from(this.players.keys());
+    const firstInfectedId = playerIds[Math.floor(Math.random() * playerIds.length)];
+    
+    this.infectPlayer(firstInfectedId, true);
+    
+    const firstInfected = this.players.get(firstInfectedId);
+    
+    this.broadcastToAll('infectedModeStarted', {
+      firstInfectedId: firstInfectedId,
+      firstInfectedName: firstInfected?.name,
+      totalPlayers: this.players.size
+    });
+    
+    console.log(`🧟 Infected mode started in Tank ${this.id}! ${firstInfected?.name} is patient zero!`);
+    return { success: true, message: 'Infected mode started!' };
+  }
+  
+  infectPlayer(playerId, isFirstInfected = false) {
+    const player = this.players.get(playerId);
+    if (!player) return;
+    
+    // Move from survivors to infected
+    this.infectedMode.survivors.delete(playerId);
+    this.infectedMode.infected.add(playerId);
+    player.isInfected = true;
+    
+    // Give newly infected a cooldown before they can infect others (except first infected)
+    if (!isFirstInfected) {
+      player.infectCooldownUntil = Date.now() + this.infectedMode.infectCooldown;
+    }
+    
+    // Check if game is over (no survivors left)
+    if (this.infectedMode.survivors.size === 0) {
+      this.endInfectedMode(playerId);
+    }
+  }
+  
+  endInfectedMode(lastSurvivorId) {
+    const lastSurvivor = this.players.get(lastSurvivorId);
+    const gameDuration = ((Date.now() - this.infectedMode.startTime) / 1000).toFixed(1);
+    
+    this.infectedMode.active = false;
+    
+    // Clear infected status from all players
+    this.players.forEach(player => {
+      player.isInfected = false;
+      player.infectCooldownUntil = 0;
+    });
+    
+    this.broadcastToAll('infectedModeEnded', {
+      lastSurvivorId: lastSurvivorId,
+      lastSurvivorName: lastSurvivor?.name,
+      gameDuration: gameDuration
+    });
+    
+    console.log(`🧟 Infected mode ended! ${lastSurvivor?.name} was the last survivor (${gameDuration}s)`);
+  }
+  
+  checkInfectedCollisions() {
+    if (!this.infectedMode.active) return;
+    
+    const infectRadius = 75; // Collision radius for infection
+    
+    // For each infected player who can infect
+    this.infectedMode.infected.forEach(infectedId => {
+      const infected = this.players.get(infectedId);
+      if (!infected) return;
+      
+      // Check if this infected player can infect (not on cooldown)
+      if (Date.now() < (infected.infectCooldownUntil || 0)) return;
+      
+      // Check collision with each survivor
+      this.infectedMode.survivors.forEach(survivorId => {
+        const survivor = this.players.get(survivorId);
+        if (!survivor) return;
+        
+        // Must be in same zone
+        if (infected.zone !== survivor.zone) return;
+        
+        // Check distance
+        const dx = infected.x - survivor.x;
+        const dy = infected.y - survivor.y;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+        
+        if (distance < infectRadius) {
+          // Infect!
+          this.performInfection(infectedId, survivorId);
+        }
+      });
+    });
+  }
+  
+  performInfection(infectorId, victimId) {
+    const infector = this.players.get(infectorId);
+    const victim = this.players.get(victimId);
+    
+    if (!victim) return;
+    
+    this.infectPlayer(victimId);
+    
+    this.broadcastToAll('playerInfected', {
+      infectorId: infectorId,
+      infectorName: infector?.name,
+      victimId: victimId,
+      victimName: victim.name,
+      survivorsLeft: this.infectedMode.survivors.size
+    });
+    
+    console.log(`🧟 ${infector?.name} infected ${victim.name}! ${this.infectedMode.survivors.size} survivors left`);
+  }
+  
+  // Handle player leaving during infected mode
+  handleInfectedPlayerLeave(playerId) {
+    if (!this.infectedMode.active) return;
+    
+    this.infectedMode.infected.delete(playerId);
+    this.infectedMode.survivors.delete(playerId);
+    
+    // If no infected left, end the game (survivors win)
+    if (this.infectedMode.infected.size === 0) {
+      this.infectedMode.active = false;
+      this.broadcastToAll('infectedModeEnded', {
+        lastSurvivorId: null,
+        lastSurvivorName: 'Survivors win - all infected left!',
+        gameDuration: ((Date.now() - this.infectedMode.startTime) / 1000).toFixed(1)
+      });
+    }
+    // If no survivors left, end the game
+    else if (this.infectedMode.survivors.size === 0 && this.infectedMode.infected.size > 0) {
+      // Find the last person who got infected
+      this.infectedMode.active = false;
+      this.broadcastToAll('infectedModeEnded', {
+        lastSurvivorId: null,
+        lastSurvivorName: 'All players infected!',
+        gameDuration: ((Date.now() - this.infectedMode.startTime) / 1000).toFixed(1)
+      });
+    }
   }
   
   broadcastToAll(event, data) {
@@ -1888,6 +2119,18 @@ io.on('connection', (socket) => {
     }
   });
   
+  // Join an in-progress tag game
+  socket.on('joinTagMode', () => {
+    const tankId = playerTanks.get(socket.id);
+    if (!tankId) return;
+    
+    const tank = fishTanks.get(tankId);
+    if (tank) {
+      const result = tank.joinTagMode(socket.id);
+      socket.emit('tagModeResponse', result);
+    }
+  });
+  
   // Leave Tag Mode (individual player opts out)
   socket.on('stopTagMode', () => {
     const tankId = playerTanks.get(socket.id);
@@ -1897,6 +2140,18 @@ io.on('connection', (socket) => {
     if (tank) {
       const result = tank.leaveTagMode(socket.id);
       socket.emit('tagModeResponse', result);
+    }
+  });
+  
+  // Start Infected Mode
+  socket.on('startInfectedMode', () => {
+    const tankId = playerTanks.get(socket.id);
+    if (!tankId) return;
+    
+    const tank = fishTanks.get(tankId);
+    if (tank) {
+      const result = tank.startInfectedMode();
+      socket.emit('infectedModeResponse', result);
     }
   });
   
